@@ -1,0 +1,733 @@
+---
+title: "Nonlinear Regression Models"
+author: "LongZhang"
+date: "12/2/2020"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3 
+    number_sections: false 
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+```
+
+# 1. Preparation 
+
+## 1.1. Import the data
+
+- **7123 instance, 48 variables**(1 id, 1 response variable, 46 predictors)
+
+```{r}
+data <- read.csv("cleaning_data.csv")
+data <- subset(data, select = -c(property_type))
+X <- subset(data, select = -c(id, price))
+y <- data$price
+dim(X)
+cat(dim(X)[2]," predictor are selected in this project:\n")
+paste(names(X), collapse=', ' )
+```
+
+
+
+## 1.2. Categorical data feature engineering
+
+- Apply One-Hot Encoding to all the remaining categorical variables.  
+  - `dummyVars()` function works on the categorical variables to create a full set of dummy variables
+  -  Argument `fullrank=T`, which will create n-1 columns for a categorical variable with n unique levels.
+- After transformation, there are **48 predictors.**
+
+```{r}
+dmy <- dummyVars(" ~ .", data = X, fullRank = T)
+X <- data.frame(predict(dmy, newdata = X))
+dim(X)
+```
+
+
+## 1.3. Missing Values & 0 Variance
+
+- No missing values
+- **Columns 25 `has_availability` has 0 variance, drop it.**
+
+```{r}
+sum(is.na(X))
+nearZeroVar(X,freqCut = 100/0)
+names(X)[nearZeroVar(X,freqCut = 100/0)]
+X <- X[,-25]
+dim(X)
+```
+
+## 1.4. Split the data
+
+```{r}
+set.seed(123)
+train_ind <- sample(seq_len(nrow(X)), size = 0.75*nrow(X))
+trainX <- X[train_ind, ]
+trainY <- y[train_ind]
+testX <- X[-train_ind, ]
+testY <- y[-train_ind]
+cat("Number of instances in training set:",length(trainY),"\n")
+cat("Number of instances in test set:",length(testY))
+```
+
+
+## 1.5. PCA Feature Reduction
+
+- PCA method generates new components using the linear combination of original predictors to capture the most posible variable.
+- "Use the cumulative proportion to determine the amount of variance that the principal components explain. Retain the principal components that explain an acceptable level of variance. The acceptable level depends on your application. For descriptive purposes, you may only need 80% of the variance explained. However, if you want to perform other analyses on the data, you may want to have at least 90% of the variance explained by the principal components." 
+[Refer to here.](https://support.minitab.com/en-us/minitab/18/help-and-how-to/modeling-statistics/multivariate/how-to/principal-components/interpret-the-results/key-results/#:~:text=You%20can%20use%20the%20size,that%20are%20greater%20than%201)
+- **Therefore, the effective dimension of data is 25 which capture 91.08% varability of the original data.**
+
+```{r}
+# Apply PCA
+PCA <- prcomp(trainX,center = TRUE, scale = TRUE)
+PCA_Result <- data.frame(summary(PCA)[["importance"]]) 
+PCA_Result <- as.data.frame(t(as.matrix(PCA_Result)))
+PCA_Result$Eigenvalues <- PCA[["sdev"]]^2
+PCA_Result$PC <- 1:dim(PCA_Result)[1]
+PCA_Result
+
+
+# The eigenvalues of the covariance/correlation matrix
+# PCA[["sdev"]]^2
+# The standard deviations of the principal components/ the square roots of the eigenvalues
+# PCA[["sdev"]]
+# The eigenvector of each PC
+eigenvector <- as.data.frame(PCA[["rotation"]])
+eigenvector
+paste(row.names(eigenvector), collapse=', ' ) # predictor names
+
+# The index of the PC of which Cumulative Proportion greater than 0.8
+PC80 <- min(which((PCA_Result$`Cumulative Proportion`>0.8) == TRUE))
+PCA_Result$`Cumulative Proportion`[PC80]
+# The index of the PC of which Cumulative Proportion greater than 0.9
+PC90 <- min(which((PCA_Result$`Cumulative Proportion`>0.9) == TRUE))
+PCA_Result$`Cumulative Proportion`[PC90]
+
+
+## Cumulative Proportion of Variance Plot
+ggplot(data = PCA_Result, mapping = aes(x = PC, y = `Cumulative Proportion`)) +
+  geom_line(color = "#0072B2") +
+  geom_point(color = "#0072B2") +
+  ylim(0, 1.1) +
+  labs(x = "Component", y = "Cumulative Proportion of Variance", 
+       title = "Cumulative Proportion of Variance") +
+  geom_point(data=PCA_Result[c(1,PC80,PC90),], 
+             aes(x = PC, y = `Cumulative Proportion`), colour="red", size=3) +
+  geom_text(data=PCA_Result[c(1,PC80,PC90),], 
+            aes(label = `Cumulative Proportion`), vjust = -2, show.legend = FALSE) +
+  geom_text(data=PCA_Result[c(1,PC80,PC90),], 
+            aes(label = PC), vjust = 2, show.legend = FALSE)
+
+## Proportion of Variance Plot
+ggplot(data = PCA_Result, mapping = aes(x = PC, y = `Proportion of Variance`)) +
+  geom_line(color = "#0072B2") +
+  geom_point(color = "#0072B2") +
+  ylim(0, 0.13) +
+  labs(x = "Component", y = "Proportion of Variance", 
+       title = "Proportion of Variance") +
+  geom_point(data=PCA_Result[c(1,PC80,PC90),], 
+             aes(x = PC, y = `Proportion of Variance`), colour="red", size=3) +
+  geom_text(data=PCA_Result[c(1,PC80,PC90),], 
+            aes(label = `Proportion of Variance`), vjust = -2, show.legend = FALSE) +
+  geom_text(data=PCA_Result[c(1,PC80,PC90),], 
+            aes(label = PC), vjust = 2, show.legend = FALSE)
+
+## Result: only use the first 25 PCs with a Cumulative Proportion greater than 0.9
+trainX_PCA <- data.frame(predict(PCA, newdata = trainX)[,1:PC90])
+testX_PCA <- data.frame(predict(PCA, newdata = testX)[,1:PC90])
+```
+
+
+## 1.6. Data Concusion
+
+- **Original Variables:**
+  - `trainX`: 5342 instances, 47 predictors
+  - `testX`: 1781 instances, 47 predictors
+  - `trainY`: 5342 instances
+  - `testY`: 1781 instances
+- **PCs (captures 91.08% varability of the original data):**
+  - `trainX_PCA`: 5342 instances, 25 predictors
+  - `testX_PCA`: 1781 instances, 25 predictors
+  - `trainY`: 5342 instances
+  - `testY`: 1781 instances
+- **Correlation Analysis:**
+
+```{r}
+## To filter on correlations, we first get the correlation matrix for the predictor set
+library(corrplot)
+segCorr <- cor(trainX)
+corrplot(segCorr,tl.cex = .4)
+
+segCorr_PCA <- cor(trainX_PCA)
+corrplot(segCorr_PCA)
+
+```
+
+
+# 2. KNN
+
+## 2.1. Original Variables
+
+```{r}
+ctrl <- trainControl(method = "cv", 
+                     number = 10,
+                     savePredictions = TRUE)
+```
+
+```{r}
+# fit the model
+set.seed(100)
+knnGrid <- expand.grid(k = c(1,5, 10,15, 20,25, 30,40))
+knnModel <- train(x=trainX, 
+                 y=trainY, 
+                 method="knn",
+                 metric = "RMSE",
+                 preProc=c("center","scale"),
+                 tuneGrid = knnGrid,
+                 trControl=ctrl)
+
+knnModel
+```
+
+
+```{r}
+# Variable importance: 
+# The importance of each predictor is evaluated individually using a “filter” approach.
+# knnImp <- varImp(knnModel, scale = FALSE)
+# plot(knnImp, top = 15, scales = list(y = list(cex = .95)), main = "Variable Importance for knn Model(Original Variables)")
+
+# Plot of Model Tuning
+knnBest <- knnModel$bestTune[[1]]
+knnResults <- knnModel$results
+knnResults
+
+ggplot(data = knnResults, mapping = aes(x = k, y = RMSE)) +
+  geom_line(color = "#0072B2") +
+  geom_point(color = "#0072B2") +
+  ylim(0.185, 0.26) +
+  geom_text(aes(label = round(RMSE,5)), vjust = -1.5, show.legend = FALSE) +
+  labs(x = "# neighbers", y = "Cross-Validated RMSE", 
+       title = "Hyperparameter Tuning for KNN (Original Variables)") +
+  geom_point(data=knnResults[knnResults$k==knnBest,], aes(x = k, y = RMSE), colour="red", size=3) +
+  geom_text(data=knnResults[knnResults$k==knnBest,],
+            aes(label = k), vjust = 2, show.legend = FALSE)
+  
+
+# Prediction on test set
+knn_pred <- data.frame(predict(knnModel,newdata = testX))
+knn_pred <- knn_pred %>%
+  rename(Prediction = names(knn_pred)) %>%
+  bind_cols(data.frame(Observation = testY)) %>%
+  mutate(Residual = Observation-Prediction)
+
+# Validation on test set
+knnPR <- data.frame(postResample(pred=knn_pred$Prediction, obs=knn_pred$Observation))
+knnPR <- as.data.frame(t(as.matrix(knnPR)),row.names = 1)
+knnPR$Model <- "KNN" 
+knnPR$PCA <- "No"
+knnPR$Hyperparameter <- "k=15"
+knnPR
+knnPR
+
+
+# plot
+ggplot(data = knn_pred, mapping = aes(x = Prediction, y = Observation)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Observed", 
+       title = "Observed vs. Predicted ")
+ggplot(data = knn_pred, mapping = aes(x = Prediction, y = Residual)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Residuals", 
+       title = "Residuals vs. Predicted ")
+```
+
+
+## 2.2. PCs
+
+```{r}
+# fit the model
+set.seed(100)
+knnGrid <- expand.grid(k = c(1,5, 10,15, 20,25, 30,40))
+knnModel_PCA <- train(x=trainX_PCA, 
+                 y=trainY, 
+                 method="knn",
+                 metric = "RMSE",
+                 preProc=c("center","scale"),
+                 tuneGrid = knnGrid,
+                 trControl=ctrl)
+
+knnModel_PCA
+```
+
+
+
+```{r}
+# Variable importance: 
+# The importance of each predictor is evaluated individually using a “filter” approach.
+# knnImp <- varImp(knnModel, scale = FALSE)
+# plot(knnImp, top = 15, scales = list(y = list(cex = .95)), main = "Variable Importance for knn Model(Original Variables)")
+
+# Plot of Model Tuning
+knnBest_PCA <- knnModel_PCA$bestTune[[1]]
+knnResults_PCA <- knnModel_PCA$results
+knnResults_PCA
+
+ggplot(data = knnResults_PCA, mapping = aes(x = k, y = RMSE)) +
+  geom_line(color = "#0072B2") +
+  geom_point(color = "#0072B2") +
+  ylim(0.185, 0.26) +
+  geom_text(aes(label = round(RMSE,5)), vjust = -1.5, show.legend = FALSE) +
+  labs(x = "# neighbers", y = "Cross-Validated RMSE", 
+       title = "Hyperparameter Tuning for KNN (PCs)") +
+  geom_point(data=knnResults_PCA[knnResults_PCA$k==knnBest_PCA,], 
+             aes(x = k, y = RMSE), colour="red", size=3) +
+  geom_text(data=knnResults_PCA[knnResults_PCA$k==knnBest_PCA,],
+            aes(label = k), vjust = 2, show.legend = FALSE)
+  
+
+# Prediction on test set
+knn_pred_PCA <- data.frame(predict(knnModel_PCA,newdata = testX_PCA))
+knn_pred_PCA <- knn_pred_PCA %>%
+  rename(Prediction = names(knn_pred_PCA)) %>%
+  bind_cols(data.frame(Observation = testY)) %>%
+  mutate(Residual = Observation-Prediction)
+
+# Validation on test set
+knnPR_PCA <- data.frame(postResample(pred=knn_pred_PCA$Prediction, obs=knn_pred_PCA$Observation))
+knnPR_PCA <- as.data.frame(t(as.matrix(knnPR_PCA)),row.names = 1)
+knnPR_PCA$Model <- "KNN" 
+knnPR_PCA$PCA <- "Yes"
+knnPR_PCA$Hyperparameter <- "k=15"
+knnPR_PCA
+
+
+# plot
+ggplot(data = knn_pred_PCA, mapping = aes(x = Prediction, y = Observation)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Observed", 
+       title = "Observed vs. Predicted ")
+ggplot(data = knn_pred_PCA, mapping = aes(x = Prediction, y = Residual)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Residuals", 
+       title = "Residuals vs. Predicted ")
+```
+
+
+
+
+
+
+
+
+## 3.2. PCs
+
+### 3.2.1. RBF Kernel
+
+**Support Vector Machines with Radial Basis Function Kernel**
+
+- an SVR model using ϵ-insensitive loss and a radial basis kernel
+- **Sigma** estimation: `kernlab::sigest()`
+  - use the training data to find a good estimate of sigma
+  - to find a reasonable estimate for the kernel’s scale parameter
+  - This function estimates the range of sigma values which would return good results when used with a radial basis SVM
+  - Ideally, any value within the range of estimates returned by this function should produce reasonable results.
+- **cost parameter C**
+  - A reasonable search grid for the cost parameter C is an exponentially growing series
+  - 2^(-2:5)
+
+```{r}
+library(kernlab)
+set.seed(100)
+sigmaRange_PCA <- sigest(as.matrix(trainX_PCA))
+svmRGrid_PCA <- expand.grid(sigma =  as.vector(sigmaRange)[1],
+                            C = 2^(-1:7))
+svmRModel_PCA <- train(x=trainX_PCA, y=trainY, 
+                  method="svmRadial", 
+                  metric = "RMSE",
+                  preProc=c("center", "scale"), 
+                  tuneGrid = svmRGrid_PCA,
+                  trControl = ctrl,
+                  type = "eps-svr",
+                  epsilon = 0.1)
+svmRModel_PCA
+```
+
+```{r}
+# Plot of Model Tuning
+svmRBest_PCA <- svmRModel_PCA$bestTune$C
+svmRResults_PCA <- svmRModel_PCA$results
+svmRResults_PCA
+
+ggplot(data = svmRResults_PCA, mapping = aes(x = C, y = RMSE)) +
+  geom_line(color = "#0072B2") +
+  geom_point(color = "#0072B2") +
+  ylim(0.172, 0.182) +
+  geom_text(aes(label = round(RMSE,5)), vjust = -1.5, show.legend = FALSE) +
+  labs(x = "Cost", y = "Cross-Validated RMSE", 
+       title = "Hyperparameter Tuning for svmR (PCs)") +
+  geom_point(data=svmRResults_PCA[svmRResults_PCA$C==svmRBest_PCA,], aes(x = C, y = RMSE), colour="red", size=3) +
+  geom_text(data=svmRResults_PCA[svmRResults_PCA$C==svmRBest_PCA,],
+            aes(label = C), vjust = 2, show.legend = FALSE)
+  
+
+# Prediction on test set
+svmR_pred_PCA <- data.frame(predict(svmRModel_PCA,newdata = testX_PCA))
+svmR_pred_PCA <- svmR_pred_PCA %>%
+  rename(Prediction = names(svmR_pred_PCA)) %>%
+  bind_cols(data.frame(Observation = testY)) %>%
+  mutate(Residual = Observation-Prediction)
+
+# Validation on test set
+svmRPR_PCA <- data.frame(postResample(pred=svmR_pred_PCA$Prediction, obs=svmR_pred_PCA$Observation))
+svmRPR_PCA <- as.data.frame(t(as.matrix(svmRPR_PCA)),row.names = 1)
+svmRPR_PCA$Model <- "svmR" 
+svmRPR_PCA$PCA <- "Yes"
+svmRPR_PCA$Hyperparameter <- "sigma = 0.006107379 and C = 32"
+svmRPR_PCA
+
+
+# plot
+ggplot(data = svmR_pred_PCA, mapping = aes(x = Prediction, y = Observation)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Observed", 
+       title = "Observed vs. Predicted ")
+ggplot(data = svmR_pred_PCA, mapping = aes(x = Prediction, y = Residual)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Residuals", 
+       title = "Residuals vs. Predicted ")
+```
+
+
+### 3.2.2. Polynomial Kernel
+
+```{r}
+set.seed(100)
+svmPGrid_PCA <-  expand.grid(degree = 1:2, # linear or quadratic
+                         scale = c(0.01,0.001,0.005),
+                         C = 2^(-4:5)) # smaller c: simpler model
+svmPModel_PCA <- train(x = trainX_PCA, y = trainY,
+                 method = "svmPoly",
+                 metric = "RMSE",
+                 preProc = c("center", "scale"),
+                 tuneGrid = svmPGrid_PCA,
+                 trControl = ctrl,
+                 type = "eps-svr",
+                 epsilon = 0.1)
+svmPModel_PCA
+```
+
+
+
+```{r}
+# Plot of Model Tuning
+svmPBest_PCA <- svmPModel_PCA$bestTune$C
+svmPResults_PCA <- svmPModel_PCA$results
+svmPResults_PCA
+
+plot(svmPModel_PCA,  ylab = "Cross-Validated RMSE")
+
+# Prediction on test set
+svmP_pred_PCA <- data.frame(predict(svmPModel_PCA,newdata = testX_PCA))
+svmP_pred_PCA <- svmP_pred_PCA %>%
+  rename(Prediction = names(svmP_pred_PCA)) %>%
+  bind_cols(data.frame(Observation = testY)) %>%
+  mutate(Residual = Observation-Prediction)
+# remove the extreme outlier
+svmP_pred_PCA[svmP_pred$Prediction < -100,]
+svmP_pred2_PCA <- svmP_pred_PCA[svmP_pred_PCA$Prediction > -100,]
+
+# Validation on test set
+svmPPR_PCA <- data.frame(postResample(pred=svmP_pred_PCA$Prediction, obs=svmP_pred_PCA$Observation))
+svmPPR_PCA <- as.data.frame(t(as.matrix(svmPPR_PCA)),row.names = 1)
+svmPPR_PCA$Model <- "svmP" 
+svmPPR_PCA$PCA <- "Yes"
+svmPPR_PCA$Hyperparameter <- ""
+svmPPR_PCA
+# Validation on test set
+svmPPR2_PCA <- data.frame(postResample(pred=svmP_pred2_PCA$Prediction, obs=svmP_pred2_PCA$Observation))
+svmPPR2_PCA <- as.data.frame(t(as.matrix(svmPPR2_PCA)),row.names = 1)
+svmPPR2_PCA$Model <- "svmP" 
+svmPPR2_PCA$PCA <- "Yes"
+svmPPR2_PCA$Hyperparameter <- "degree = 2, scale = 0.01 and C = 1"
+svmPPR2_PCA
+
+# plot
+ggplot(data = svmP_pred_PCA, mapping = aes(x = Prediction, y = Observation)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Observed", 
+       title = "Observed vs. Predicted ")
+ggplot(data = svmP_pred_PCA, mapping = aes(x = Prediction, y = Residual)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Residuals", 
+       title = "Residuals vs. Predicted ")
+
+ggplot(data = svmP_pred2_PCA, mapping = aes(x = Prediction, y = Observation)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Observed", 
+       title = "Observed vs. Predicted ")
+ggplot(data = svmP_pred2_PCA, mapping = aes(x = Prediction, y = Residual)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Residuals", 
+       title = "Residuals vs. Predicted ")
+```
+
+
+
+
+# 3. NN
+
+## 3.1. Original Variables
+
+### 3.1.1. nnet
+
+```{r}
+library(nnet)
+nnGrid = expand.grid(decay=c(0,0.01,0.1), size=1:10 )
+set.seed(100)
+nnetModel = train(x=trainX, y=trainY, 
+                  method="nnet", 
+                  preProc=c("center", "scale"),
+                  linout=TRUE, trace=FALSE, 
+                  MaxNWts=10 * (ncol(trainX)+1) + 10 + 1, 
+                  maxit=500, 
+                  tuneGrid = nnGrid,
+                  trControl = ctrl)
+nnetModel  
+```
+
+```{r}
+# Plot of Model Tuning
+nnetBest <- nnetModel$bestTune
+nnetResults <- nnetModel$results
+nnetResults
+
+plot(nnetModel,  ylab = "Cross-Validated RMSE")
+
+# Prediction on test set
+nnet_pred <- data.frame(predict(nnetModel,newdata = testX))
+nnet_pred <- nnet_pred %>%
+  rename(Prediction = names(nnet_pred)) %>%
+  bind_cols(data.frame(Observation = testY)) %>%
+  mutate(Residual = Observation-Prediction)
+
+# Validation on test set
+nnetPR <- data.frame(postResample(pred=nnet_pred$Prediction, obs=nnet_pred$Observation))
+nnetPR <- as.data.frame(t(as.matrix(nnetPR)),row.names = 1)
+nnetPR$Model <- "nnet" 
+nnetPR$PCA <- "No"
+nnetPR$Hyperparameter <- "size = 7 and decay = 0.01"
+nnetPR
+
+
+# plot
+ggplot(data = nnet_pred, mapping = aes(x = Prediction, y = Observation)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Observed", 
+       title = "Observed vs. Predicted ")
+ggplot(data = nnet_pred, mapping = aes(x = Prediction, y = Residual)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Residuals", 
+       title = "Residuals vs. Predicted ")
+```
+
+### 3.1.2. avnnet
+
+```{r}
+library(nnet)
+avNNetGrid = expand.grid(decay=c(0,0.01,0.1), size=1:10 , bag = 20)
+set.seed(100)
+avNNetModel = train(x=trainX, y=trainY, 
+                  method="avNNet", 
+                  preProc=c("center", "scale"),
+                  linout=TRUE, trace=FALSE, 
+                  MaxNWts=10 * (ncol(trainX)+1) + 10 + 1, 
+                  maxit=500, 
+                  tuneGrid = avNNetGrid,
+                  trControl = ctrl)
+avNNetModel  
+```
+
+```{r}
+# Plot of Model Tuning
+avNNetBest <- avNNetModel$bestTune
+avNNetResults <- avNNetModel$results
+avNNetResults
+
+plot(avNNetModel,  ylab = "Cross-Validated RMSE")
+
+# Prediction on test set
+avNNet_pred <- data.frame(predict(avNNetModel,newdata = testX))
+avNNet_pred <- avNNet_pred %>%
+  rename(Prediction = names(avNNet_pred)) %>%
+  bind_cols(data.frame(Observation = testY)) %>%
+  mutate(Residual = Observation-Prediction)
+
+# Validation on test set
+avNNetPR <- data.frame(postResample(pred=avNNet_pred$Prediction, obs=avNNet_pred$Observation))
+avNNetPR <- as.data.frame(t(as.matrix(avNNetPR)),row.names = 1)
+avNNetPR$Model <- "avNNet" 
+avNNetPR$PCA <- "No"
+avNNetPR$Hyperparameter <- ""
+avNNetPR
+
+
+# plot
+ggplot(data = avNNet_pred, mapping = aes(x = Prediction, y = Observation)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Observed", 
+       title = "Observed vs. Predicted ")
+ggplot(data = avNNet_pred, mapping = aes(x = Prediction, y = Residual)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Residuals", 
+       title = "Residuals vs. Predicted ")
+```
+
+## 3.2. PCs
+
+
+### 3.2.1. nnet
+
+```{r}
+library(nnet)
+nnGrid = expand.grid(decay=c(0,0.01,0.1), size=1:10 )
+set.seed(100)
+nnetModel_PCA = train(x=trainX_PCA, y=trainY, 
+                  method="nnet", 
+                  preProc=c("center", "scale"),
+                  linout=TRUE, trace=FALSE, 
+                  MaxNWts=10 * (ncol(trainX_PCA)+1) + 10 + 1, 
+                  maxit=500, 
+                  tuneGrid = nnGrid,
+                  trControl = ctrl)
+nnetModel_PCA  
+```
+
+```{r}
+# Plot of Model Tuning
+nnetBest_PCA <- nnetModel_PCA$bestTune
+nnetResults_PCA <- nnetModel_PCA$results
+nnetResults_PCA
+
+plot(nnetModel_PCA,  ylab = "Cross-Validated RMSE")
+
+# Prediction on test set
+nnet_pred_PCA <- data.frame(predict(nnetModel_PCA,newdata = testX_PCA))
+nnet_pred_PCA <- nnet_pred_PCA %>%
+  rename(Prediction = names(nnet_pred_PCA)) %>%
+  bind_cols(data.frame(Observation = testY)) %>%
+  mutate(Residual = Observation-Prediction)
+
+# Validation on test set
+nnetPR_PCA <- data.frame(postResample(pred=nnet_pred_PCA$Prediction, obs=nnet_pred_PCA$Observation))
+nnetPR_PCA <- as.data.frame(t(as.matrix(nnetPR_PCA)),row.names = 1)
+nnetPR_PCA$Model <- "nnet" 
+nnetPR_PCA$PCA <- "Yes"
+nnetPR_PCA$Hyperparameter <- "size = 7 and decay = 0.01"
+nnetPR_PCA
+
+
+# plot
+ggplot(data = nnet_pred_PCA, mapping = aes(x = Prediction, y = Observation)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Observed", 
+       title = "Observed vs. Predicted ")
+ggplot(data = nnet_pred_PCA, mapping = aes(x = Prediction, y = Residual)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Residuals", 
+       title = "Residuals vs. Predicted ")
+```
+
+
+### 3.2.2. avnnet
+
+```{r}
+library(nnet)
+avNNetGrid = expand.grid(decay=c(0,0.01,0.1), size=1:10 , bag = 20)
+set.seed(100)
+avNNetModel_PCA = train(x=trainX_PCA, y=trainY, 
+                  method="avNNet", 
+                  preProc=c("center", "scale"),
+                  linout=TRUE, trace=FALSE, 
+                  MaxNWts=10 * (ncol(trainX_PCA)+1) + 10 + 1, 
+                  maxit=500, 
+                  tuneGrid = avNNetGrid,
+                  trControl = ctrl)
+avNNetModel_PCA  
+```
+
+
+
+```{r}
+# Plot of Model Tuning
+avNNetBest_PCA <- avNNetModel_PCA$bestTune
+avNNetResults_PCA <- avNNetModel_PCA$results
+avNNetResults_PCA
+
+plot(avNNetModel_PCA,  ylab = "Cross-Validated RMSE")
+
+# Prediction on test set
+avNNet_pred_PCA <- data.frame(predict(avNNetModel_PCA,newdata = testX_PCA))
+avNNet_pred_PCA <- avNNet_pred_PCA %>%
+  rename(Prediction = names(avNNet_pred_PCA)) %>%
+  bind_cols(data.frame(Observation = testY)) %>%
+  mutate(Residual = Observation-Prediction)
+
+# Validation on test set
+avNNetPR_PCA <- data.frame(postResample(pred=avNNet_pred_PCA$Prediction, obs=avNNet_pred_PCA$Observation))
+avNNetPR_PCA <- as.data.frame(t(as.matrix(avNNetPR_PCA)),row.names = 1)
+avNNetPR_PCA$Model <- "avNNet" 
+avNNetPR_PCA$PCA <- "Yes"
+avNNetPR_PCA$Hyperparameter <- ""
+avNNetPR_PCA
+
+
+# plot
+ggplot(data = avNNet_pred_PCA, mapping = aes(x = Prediction, y = Observation)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Observed", 
+       title = "Observed vs. Predicted ")
+ggplot(data = avNNet_pred_PCA, mapping = aes(x = Prediction, y = Residual)) +
+  geom_point(color = "#0072B2") +
+  labs(x = "Predicted", y = "Residuals", 
+       title = "Residuals vs. Predicted ")
+```
+
+
+# plot for most important 10 variables for random forest
+
+```{r message=FALSE, warning=FALSE}
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col = rgb(.2, .2, .2, .4)
+theme1$plot.symbol$pch = 16
+theme1$plot.line$col = rgb(1, 0, 0, .7)
+theme1$plot.line$lwd <- 2
+trellis.par.set(theme1)
+featurePlot(x = trainX[,c( "calculated_host_listings_count_private_rooms",
+                          "number_of_reviews", "host_since_days.how.many.days.since.home.is.as.airbnb.",
+                          "room_type.Private.room","beds","bedrooms","accommodates",
+                          "longitude","calculated_host_listings_count_entire_homes",
+                          "latitude")], 
+            y = trainY, 
+            plot = "scatter",
+            type = c("p", "smooth"),
+            span = .5,
+            layout = c(5, 2))
+```
+
+```{r}
+heatscatter(x,y)
+```
+
